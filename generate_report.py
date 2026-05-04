@@ -1,492 +1,580 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Генерирует отчёт по лабораторной работе (метод Гаусса) по структуре шаблона.
+Генератор отчёта по лабораторной работе — метод Гаусса.
+Структура по шаблону отчёт_шаблон.pdf, содержимое из отчёт.pdf.
 """
-
+import sys
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import cm
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
-from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-    PageBreak, HRFlowable
-)
+from reportlab.lib.units import cm, mm
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT, TA_JUSTIFY
 from reportlab.lib import colors
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.platypus import (
+    BaseDocTemplate, Frame, PageTemplate,
+    Paragraph, Spacer, Table, TableStyle,
+    PageBreak, KeepTogether,
+)
+from reportlab.platypus.flowables import HRFlowable
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-import os, subprocess, sys
+from reportlab.pdfgen import canvas as pdfcanvas
 
 # ── шрифты ────────────────────────────────────────────────────────────────────
-# Ищем DejaVu (поддерживает кириллицу) или скачиваем.
-def ensure_font(name, path):
-    if not os.path.exists(path):
-        subprocess.run(
-            ["apt-get", "install", "-y", "-q", "fonts-dejavu-core"],
-            capture_output=True
-        )
-    for candidate in [
-        path,
-        "/usr/share/fonts/truetype/dejavu/" + os.path.basename(path),
-        "/usr/share/fonts/dejavu/" + os.path.basename(path),
-    ]:
-        if os.path.exists(candidate):
-            return candidate
-    return None
+BASE = "/usr/share/fonts/truetype/dejavu/"
+pdfmetrics.registerFont(TTFont("R",  BASE + "DejaVuSans.ttf"))
+pdfmetrics.registerFont(TTFont("B",  BASE + "DejaVuSans-Bold.ttf"))
+pdfmetrics.registerFont(TTFont("SR", BASE + "DejaVuSerif.ttf"))
+pdfmetrics.registerFont(TTFont("SB", BASE + "DejaVuSerif-Bold.ttf"))
+pdfmetrics.registerFont(TTFont("M",  BASE + "DejaVuSansMono.ttf"))
+pdfmetrics.registerFont(TTFont("MB", BASE + "DejaVuSansMono-Bold.ttf"))
 
-FONT_REG_PATH = ensure_font("DejaVuSans", "DejaVuSans.ttf")
-FONT_BOLD_PATH = ensure_font("DejaVuSans-Bold", "DejaVuSans-Bold.ttf")
-FONT_MONO_PATH = ensure_font("DejaVuSansMono", "DejaVuSansMono.ttf")
+# ── размеры страницы ──────────────────────────────────────────────────────────
+PW, PH = A4
+ML, MR, MT, MB = 3*cm, 2*cm, 2*cm, 2*cm
+TW = PW - ML - MR   # ширина текстового блока
 
-if not FONT_REG_PATH:
-    sys.exit("Не найден шрифт DejaVuSans. Установите пакет fonts-dejavu-core.")
+# ── цвета ─────────────────────────────────────────────────────────────────────
+C_DARK  = colors.HexColor("#1a2a3a")
+C_BLUE  = colors.HexColor("#1f5c99")
+C_LBLUE = colors.HexColor("#d6e8f7")
+C_ALTBG = colors.HexColor("#f0f5fb")
+C_GREY  = colors.HexColor("#666666")
+C_LINE  = colors.HexColor("#b0c4d8")
+C_WHITE = colors.white
+C_CODE  = colors.HexColor("#1e1e1e")
+C_CODEBG= colors.HexColor("#f4f4f4")
 
-pdfmetrics.registerFont(TTFont("DejaVu", FONT_REG_PATH))
-pdfmetrics.registerFont(TTFont("DejaVu-Bold", FONT_BOLD_PATH))
-pdfmetrics.registerFont(TTFont("DejaVu-Mono", FONT_MONO_PATH))
+
+def S(name, **kw):
+    """Создать стиль с базовыми параметрами."""
+    defaults = dict(fontName="R", fontSize=11, leading=17,
+                    textColor=C_DARK, spaceAfter=0, spaceBefore=0)
+    defaults.update(kw)
+    return ParagraphStyle(name, **defaults)
+
 
 # ── стили ─────────────────────────────────────────────────────────────────────
-W, H = A4
-MARGIN = 2.5 * cm
+sBody = S("body", alignment=TA_JUSTIFY, spaceAfter=5)
+sBullet = S("bullet", leftIndent=16, firstLineIndent=0, spaceAfter=3)
+sH1   = S("h1", fontName="SB", fontSize=13, leading=20, textColor=C_BLUE,
+           spaceBefore=14, spaceAfter=6)
+sMeta_key = S("mk", fontName="B", fontSize=11, leading=15)
+sMeta_val = S("mv", fontName="R", fontSize=11, leading=15)
+sCode = S("code", fontName="M", fontSize=9, leading=13,
+          textColor=C_CODE, leftIndent=0, spaceAfter=0)
+sTH   = S("th", fontName="B", fontSize=10, leading=13,
+          alignment=TA_CENTER, textColor=C_WHITE)
+sTD   = S("td", fontName="R", fontSize=10, leading=14, alignment=TA_LEFT)
+sTDc  = S("tdc", fontName="R", fontSize=10, leading=14, alignment=TA_CENTER)
+sCoverHead = S("ch", fontName="SB", fontSize=16, leading=24,
+               alignment=TA_CENTER, textColor=C_DARK)
+sCoverSub  = S("cs", fontName="SR", fontSize=13, leading=20,
+               alignment=TA_CENTER, textColor=C_DARK)
+sCoverYear = S("cy", fontName="SR", fontSize=12, leading=18,
+               alignment=TA_CENTER, textColor=C_GREY)
 
-def make_styles():
-    base = getSampleStyleSheet()
-    common = dict(fontName="DejaVu", leading=16)
 
-    cover_title = ParagraphStyle(
-        "CoverTitle",
-        fontName="DejaVu-Bold",
-        fontSize=16,
-        leading=22,
-        alignment=TA_CENTER,
-        spaceAfter=8,
-    )
-    cover_subtitle = ParagraphStyle(
-        "CoverSubtitle",
-        fontName="DejaVu",
-        fontSize=13,
-        leading=18,
-        alignment=TA_CENTER,
-        spaceAfter=6,
-    )
-    section_heading = ParagraphStyle(
-        "SectionHeading",
-        fontName="DejaVu-Bold",
-        fontSize=12,
-        leading=18,
-        spaceBefore=14,
-        spaceAfter=6,
-    )
-    body = ParagraphStyle(
-        "Body",
-        fontName="DejaVu",
-        fontSize=11,
-        leading=17,
-        alignment=TA_JUSTIFY,
-        spaceAfter=6,
-    )
-    bullet = ParagraphStyle(
-        "Bullet",
-        fontName="DejaVu",
-        fontSize=11,
-        leading=17,
-        leftIndent=20,
-        spaceAfter=4,
-        bulletIndent=6,
-    )
-    code = ParagraphStyle(
-        "Code",
-        fontName="DejaVu-Mono",
-        fontSize=9,
-        leading=13,
-        leftIndent=20,
-        spaceAfter=3,
-        textColor=colors.HexColor("#1a1a1a"),
-        backColor=colors.HexColor("#f5f5f5"),
-    )
-    table_header = ParagraphStyle(
-        "TableHeader",
-        fontName="DejaVu-Bold",
-        fontSize=10,
-        leading=14,
-        alignment=TA_CENTER,
-    )
-    table_cell = ParagraphStyle(
-        "TableCell",
-        fontName="DejaVu",
-        fontSize=10,
-        leading=14,
-        alignment=TA_LEFT,
-    )
-    caption = ParagraphStyle(
-        "Caption",
-        fontName="DejaVu",
-        fontSize=10,
-        leading=14,
-        alignment=TA_CENTER,
-        textColor=colors.grey,
-        spaceAfter=6,
-    )
-    return dict(
-        cover_title=cover_title,
-        cover_subtitle=cover_subtitle,
-        section_heading=section_heading,
-        body=body,
-        bullet=bullet,
-        code=code,
-        table_header=table_header,
-        table_cell=table_cell,
-        caption=caption,
-    )
+def sp(h=6):
+    return Spacer(1, h)
 
-# ── таблица стилей ─────────────────────────────────────────────────────────────
-def tbl_style(header_bg=colors.HexColor("#2c5f8a")):
-    return TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), header_bg),
-        ("TEXTCOLOR",  (0, 0), (-1, 0), colors.white),
-        ("FONTNAME",   (0, 0), (-1, 0), "DejaVu-Bold"),
-        ("FONTSIZE",   (0, 0), (-1, 0), 10),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1),
-         [colors.white, colors.HexColor("#eef4fb")]),
-        ("FONTNAME",   (0, 1), (-1, -1), "DejaVu"),
-        ("FONTSIZE",   (0, 1), (-1, -1), 10),
-        ("GRID",       (0, 0), (-1, -1), 0.5, colors.HexColor("#aaaaaa")),
-        ("VALIGN",     (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING",  (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ("TOPPADDING",   (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING",(0, 0), (-1, -1), 5),
-    ])
+
+def hr():
+    return HRFlowable(width="100%", thickness=0.6, color=C_LINE,
+                      spaceAfter=4, spaceBefore=4)
+
+
+def heading(text):
+    return KeepTogether([hr(), Paragraph(text, sH1)])
+
+
+def body(text):
+    return Paragraph(text, sBody)
+
+
+def bullet(text):
+    return Paragraph("\u2013\u2002" + text, sBullet)
+
+
+def code_block(lines):
+    """lines: list of str — каждая строка кода."""
+    rows = [[Paragraph(ln.replace(" ", "\u00a0"), sCode)] for ln in lines]
+    t = Table(rows, colWidths=[TW])
+    t.setStyle(TableStyle([
+        ("BACKGROUND",   (0, 0), (-1, -1), C_CODEBG),
+        ("LEFTPADDING",  (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING",   (0, 0), (0, 0), 8),
+        ("BOTTOMPADDING",(0, -1),(-1, -1), 8),
+        ("TOPPADDING",   (0, 1), (-1, -1), 1),
+        ("BOTTOMPADDING",(0, 0), (-1, -2), 1),
+        ("BOX",          (0, 0), (-1, -1), 0.5, C_LINE),
+        ("LINEAFTER",    (0, 0), (0, -1), 3, C_BLUE),
+    ]))
+    return t
+
+
+def data_table(header_row, data_rows, col_widths):
+    """Таблица данных с заголовком."""
+    all_rows = [[Paragraph(h, sTH) for h in header_row]]
+    for row in data_rows:
+        styles = [sTDc if i == 0 else sTD for i in range(len(row))]
+        all_rows.append([Paragraph(cell, styles[i]) for i, cell in enumerate(row)])
+
+    t = Table(all_rows, colWidths=col_widths, repeatRows=1)
+    t.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, 0),  C_BLUE),
+        ("ROWBACKGROUNDS",(0, 1), (-1, -1), [C_WHITE, C_ALTBG]),
+        ("GRID",          (0, 0), (-1, -1), 0.4, C_LINE),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 7),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 7),
+        ("TOPPADDING",    (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    return t
+
+
+# ── колонтитулы ───────────────────────────────────────────────────────────────
+def make_page_templates(doc):
+    """Создаёт шаблоны страниц: обложка и основные страницы."""
+    cover_frame = Frame(ML, MB, TW, PH - MT - MB, id="cover")
+    main_frame  = Frame(ML, MB + 1.2*cm, TW, PH - MT - MB - 1.2*cm, id="main")
+
+    def draw_cover(c, d):
+        pass  # без колонтитулов на обложке
+
+    def draw_main(c, d):
+        c.saveState()
+        # Верхняя линия
+        c.setStrokeColor(C_LINE)
+        c.setLineWidth(0.5)
+        c.line(ML, PH - MT + 4*mm, PW - MR, PH - MT + 4*mm)
+        # Колонтитул верх
+        c.setFont("R", 8)
+        c.setFillColor(C_GREY)
+        c.drawString(ML, PH - MT + 6*mm,
+                     "Лабораторная работа — Метод Гаусса с частичным выбором ведущего элемента")
+        c.drawRightString(PW - MR, PH - MT + 6*mm, "НКАбд-03-25")
+        # Нижняя линия + номер страницы
+        c.line(ML, MB - 6*mm, PW - MR, MB - 6*mm)
+        c.setFont("R", 9)
+        c.setFillColor(C_GREY)
+        page_str = f"— {d.page - 1} —"
+        c.drawCentredString(PW / 2, MB - 11*mm, page_str)
+        c.restoreState()
+
+    cover_tpl = PageTemplate(id="Cover", frames=[cover_frame],
+                             onPage=draw_cover)
+    main_tpl  = PageTemplate(id="Main",  frames=[main_frame],
+                             onPage=draw_main)
+    doc.addPageTemplates([cover_tpl, main_tpl])
+
 
 # ── построение документа ──────────────────────────────────────────────────────
 def build(output_path):
-    doc = SimpleDocTemplate(
+    doc = BaseDocTemplate(
         output_path,
         pagesize=A4,
-        leftMargin=MARGIN, rightMargin=MARGIN,
-        topMargin=MARGIN,  bottomMargin=MARGIN,
+        leftMargin=ML, rightMargin=MR,
+        topMargin=MT,  bottomMargin=MB,
         title="Отчёт по лабораторной работе — Метод Гаусса",
         author="Козлов Данила Владимирович",
     )
+    make_page_templates(doc)
 
-    S = make_styles()
     story = []
-    TW = W - 2 * MARGIN  # полная ширина текста
 
-    def h(text):
-        return Paragraph(text, S["section_heading"])
+    # ════════════════════════════════════════════════════════════
+    # ТИТУЛЬНЫЙ ЛИСТ
+    # ════════════════════════════════════════════════════════════
+    story.append(sp(70))
 
-    def p(text):
-        return Paragraph(text, S["body"])
+    # Шапка вуза (как в шаблоне)
+    story.append(Paragraph(
+        "Министерство науки и высшего образования Российской Федерации",
+        S("uni", fontName="R", fontSize=10, leading=14, alignment=TA_CENTER, textColor=C_GREY)
+    ))
+    story.append(sp(2))
+    story.append(Paragraph(
+        "Федеральное государственное автономное образовательное учреждение",
+        S("uni2", fontName="R", fontSize=10, leading=14, alignment=TA_CENTER, textColor=C_GREY)
+    ))
+    story.append(sp(14))
 
-    def b(text):
-        return Paragraph(f"• &nbsp;&nbsp;{text}", S["bullet"])
+    story.append(hr())
+    story.append(sp(14))
 
-    def code(text):
-        return Paragraph(text.replace(" ", "&nbsp;").replace("\n", "<br/>"),
-                         S["code"])
+    story.append(Paragraph("ОТЧЁТ", sCoverHead))
+    story.append(sp(4))
+    story.append(Paragraph("ПО ЛАБОРАТОРНОЙ РАБОТЕ", sCoverHead))
+    story.append(sp(18))
+    story.append(Paragraph(
+        "Тема: «Решение системы линейных уравнений методом Гаусса\n"
+        "с частичным выбором ведущего элемента»",
+        sCoverSub,
+    ))
+    story.append(sp(30))
+    story.append(hr())
+    story.append(sp(14))
 
-    def sp(n=8):
-        return Spacer(1, n)
-
-    # ── Титульный лист ─────────────────────────────────────────────────────────
-    story += [
-        sp(60),
-        Paragraph("ОТЧЕТ", S["cover_title"]),
-        Paragraph("ПО ЛАБОРАТОРНОЙ РАБОТЕ", S["cover_title"]),
-        sp(12),
-        Paragraph(
-            "Тема: «Решение системы линейных уравнений методом Гаусса\n"
-            "с частичным выбором ведущего элемента»",
-            S["cover_subtitle"],
-        ),
-        sp(40),
+    # Реквизиты — таблица без рамок
+    meta = [
+        ("Дисциплина",            "Цифровая грамотность, технология программирования"),
+        ("Тип работы",            "Лабораторная работа \u2116\u00a04"),
+        ("Язык программирования", "C++"),
+        ("Выполнил",              "Козлов Данила Владимирович"),
+        ("Группа",                "НКАбд-03-25"),
     ]
-
-    meta_data = [
-        ["Дисциплина",           "Цифровая грамотность, технология программирования"],
-        ["Тип работы",           "Лабораторная работа №4"],
-        ["Язык программирования","C++"],
-        ["Выполнил",             "Козлов Данила Владимирович"],
-        ["Группа",               "НКАбд-03-25"],
-    ]
-    col_w = [TW * 0.38, TW * 0.62]
-    meta_tbl = Table(
-        [[Paragraph(r[0], S["table_cell"]),
-          Paragraph(r[1], S["table_cell"])] for r in meta_data],
-        colWidths=col_w,
-    )
+    meta_rows = [[Paragraph(k, sMeta_key), Paragraph(v, sMeta_val)] for k, v in meta]
+    meta_tbl = Table(meta_rows, colWidths=[TW * 0.42, TW * 0.58])
     meta_tbl.setStyle(TableStyle([
-        ("FONTNAME",  (0, 0), (-1, -1), "DejaVu"),
-        ("FONTSIZE",  (0, 0), (-1, -1), 11),
-        ("FONTNAME",  (0, 0), (0, -1),  "DejaVu-Bold"),
-        ("GRID",      (0, 0), (-1, -1), 0.5, colors.HexColor("#aaaaaa")),
-        ("VALIGN",    (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING",  (0, 0), (-1, -1), 8),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-        ("TOPPADDING",   (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING",(0, 0), (-1, -1), 6),
-        ("ROWBACKGROUNDS", (0, 0), (-1, -1),
-         [colors.white, colors.HexColor("#eef4fb")]),
+        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 4),
+        ("TOPPADDING",    (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LINEBELOW",     (0, 0), (-1, -1), 0.3, C_LINE),
     ]))
-    story += [meta_tbl, sp(40),
-              Paragraph("2026 г.", S["cover_subtitle"]),
-              PageBreak()]
+    story.append(meta_tbl)
+    story.append(sp(40))
+    story.append(hr())
+    story.append(sp(10))
+    story.append(Paragraph("2026 г.", sCoverYear))
 
-    # ── 1. Цель работы ─────────────────────────────────────────────────────────
-    story += [
-        h("1. Цель работы"),
-        p("Реализовать на языке C++ программу, решающую систему линейных уравнений (СЛУ) "
-          "методом Гаусса с частичным выбором ведущего элемента и вычисляющую определитель "
-          "матрицы системы. Исследовать работу программы при различных значениях "
-          "размерности системы."),
-        sp(),
-    ]
+    # Переход на основной шаблон
+    story.append(PageBreak())
+    from reportlab.platypus import NextPageTemplate
+    story.insert(story.index(next(f for f in story if isinstance(f, PageBreak))),
+                 NextPageTemplate("Main"))
 
-    # ── 2. Постановка задачи ───────────────────────────────────────────────────
-    story += [
-        h("2. Постановка задачи"),
-        p("Дана система <i>n</i> линейных уравнений с <i>n</i> неизвестными:"),
-        sp(4),
-        Paragraph("<b>A · x = b</b>", ParagraphStyle(
-            "Formula", fontName="DejaVu-Bold", fontSize=12,
-            leading=18, alignment=TA_CENTER, spaceAfter=6)),
-        sp(4),
-        p("где <b>A</b> — матрица коэффициентов размера n×n, "
-          "<b>x</b> — вектор неизвестных, <b>b</b> — вектор правых частей."),
-        sp(4),
-        p("Метод состоит из двух этапов: <b>прямого хода</b> и <b>обратного хода</b>."),
-        sp(4),
-        p("<b>Прямой ход</b> — приведение матрицы к верхнетреугольному виду. "
-          "На каждом шаге k = 0, 1, …, n−1 выполняются следующие действия:"),
-        b("В k-м столбце среди элементов строк k, k+1, …, n−1 находится элемент "
-          "максимального модуля (ведущий элемент)."),
-        b("Строка, содержащая ведущий элемент, переставляется на k-е место "
-          "(счётчик перестановок увеличивается на 1)."),
-        b("Все элементы, расположенные ниже ведущего элемента в k-м столбце, "
-          "обнуляются путём элементарных преобразований строк."),
-        sp(4),
-        p("Для строки <i>i</i> &gt; <i>k</i> вычисляется множитель "
-          "<b>factor = a[i][k] / a[k][k]</b>, после чего для каждого элемента строки "
-          "<i>i</i> применяется преобразование:"),
-        Paragraph("a[i][j] -= factor * a[k][j],&nbsp;&nbsp;&nbsp;b[i] -= factor * b[k]",
-                  ParagraphStyle("FormulaI", fontName="DejaVu-Mono", fontSize=10,
-                                 leading=16, leftIndent=30, spaceAfter=6)),
-        sp(4),
-        p("<b>Обратный ход</b> — нахождение неизвестных. "
-          "Из нижней строки вычисляется x[n−1] = b[n−1] / a[n−1][n−1]. "
-          "Далее для i = n−2, …, 0:"),
-        Paragraph("x[i] = (b[i] − Σ<sub>j=i+1</sub><sup>n−1</sup> a[i][j]·x[j]) / a[i][i]",
-                  ParagraphStyle("FormulaI2", fontName="DejaVu", fontSize=11,
-                                 leading=16, leftIndent=30, spaceAfter=6)),
-        sp(4),
-        p("После приведения матрицы к треугольному виду определитель равен произведению "
-          "диагональных элементов с учётом знака, определяемого числом перестановок строк:"),
-        Paragraph("det(A) = (−1)<sup>p</sup> · a[0][0] · a[1][1] · … · a[n−1][n−1]",
-                  ParagraphStyle("FormulaI3", fontName="DejaVu", fontSize=11,
-                                 leading=16, leftIndent=30, spaceAfter=6)),
-        p("где <i>p</i> — количество выполненных перестановок строк."),
-        sp(),
-    ]
+    # ════════════════════════════════════════════════════════════
+    # 1. ЦЕЛЬ РАБОТЫ
+    # ════════════════════════════════════════════════════════════
+    story.append(heading("1. Цель работы"))
+    story.append(sp(4))
+    story.append(body(
+        "Реализовать на языке C++ программу, решающую систему линейных уравнений "
+        "методом Гаусса с частичным выбором ведущего элемента и вычисляющую "
+        "определитель матрицы системы. Исследовать работу программы при различных "
+        "значениях размерности системы."
+    ))
+    story.append(sp(8))
 
-    # ── 3. Описание функций программы ─────────────────────────────────────────
-    story += [
-        h("3. Описание функций программы"),
-        p("Выбор ведущего элемента по столбцу (частичный выбор) необходим для:"),
-        b("Предотвращения деления на ноль при нулевом диагональном элементе."),
-        b("Уменьшения накопления ошибок округления при вычислениях в арифметике "
-          "с плавающей запятой."),
-        b("Повышения численной устойчивости алгоритма."),
-        sp(8),
-    ]
-
-    func_data = [
-        [Paragraph("Функция", S["table_header"]),
-         Paragraph("Прототип", S["table_header"]),
-         Paragraph("Назначение", S["table_header"])],
-        [Paragraph("create", S["table_cell"]),
-         Paragraph("int create(int n, double**&amp; a,\ndouble*&amp; b)", S["table_cell"]),
-         Paragraph("Динамическое выделение памяти и инициализация матрицы A "
-                   "и вектора b случайными значениями", S["table_cell"])],
-        [Paragraph("gauss", S["table_cell"]),
-         Paragraph("double gauss(int n, double** a,\ndouble* b, double* x)", S["table_cell"]),
-         Paragraph("Решение СЛУ методом Гаусса с частичным выбором; "
-                   "возвращает определитель", S["table_cell"])],
-        [Paragraph("freeMemory", S["table_cell"]),
-         Paragraph("void freeMemory(int n,\ndouble**&amp; a, double*&amp; b)", S["table_cell"]),
-         Paragraph("Освобождение динамически выделенной памяти", S["table_cell"])],
-        [Paragraph("printSystem", S["table_cell"]),
-         Paragraph("void printSystem(int n,\ndouble** a, double* b)", S["table_cell"]),
-         Paragraph("Вывод расширенной матрицы системы (только для малых n)", S["table_cell"])],
-        [Paragraph("residual", S["table_cell"]),
-         Paragraph("double residual(...)", S["table_cell"]),
-         Paragraph("Вычисление нормы невязки ‖Ax − b‖ для контроля точности", S["table_cell"])],
-        [Paragraph("runTest", S["table_cell"]),
-         Paragraph("void runTest(int n)", S["table_cell"]),
-         Paragraph("Запуск полного теста для заданной размерности n", S["table_cell"])],
-    ]
-    col_w3 = [TW * 0.18, TW * 0.37, TW * 0.45]
-    func_tbl = Table(func_data, colWidths=col_w3, repeatRows=1)
-    func_tbl.setStyle(tbl_style())
-    story += [func_tbl, sp()]
-
-    # ── 4. Состав программы ───────────────────────────────────────────────────
-    story += [
-        h("4. Состав программы"),
-        p("Программа состоит из нескольких функций и одной демонстрационной функции "
-          "<b>main</b>. Функция <b>main</b> последовательно вызывает <b>runTest</b> "
-          "для каждого значения n. Функция <b>runTest</b> выполняет следующие шаги:"),
-        b("Вызывает <b>create</b> — выделение памяти и заполнение данными."),
-        b("Создаёт копию исходных данных для последующего вычисления невязки."),
-        b("Вызывает <b>gauss</b> — решение системы и получение определителя."),
-        b("Вызывает <b>residual</b> — проверка точности полученного решения."),
-        b("Вызывает <b>freeMemory</b> — освобождение всей динамической памяти."),
-        sp(),
-    ]
-
-    # ── 5. Алгоритм и ключевые фрагменты кода ─────────────────────────────────
-    story += [
-        h("5. Алгоритм и ключевые фрагменты кода"),
-        p("<b>Выделение двумерного массива в динамической памяти:</b>"),
-        sp(4),
-    ]
-    code_alloc = (
-        "a = new double*[n];\n"
-        "for (int i = 0; i < n; i++)\n"
-        "    a[i] = new double[n];"
-    )
+    # ════════════════════════════════════════════════════════════
+    # 2. ПОСТАНОВКА ЗАДАЧИ
+    # ════════════════════════════════════════════════════════════
+    story.append(heading("2. Постановка задачи"))
+    story.append(sp(4))
+    story.append(body(
+        "Дана система n линейных уравнений с n неизвестными:"
+    ))
+    story.append(sp(6))
     story.append(Paragraph(
-        code_alloc.replace(" ", "&nbsp;").replace("\n", "<br/>"),
-        S["code"]))
-    story += [sp(8), p("<b>Поиск ведущего элемента:</b>"), sp(4)]
-    code_pivot = (
-        "int pivotRow = col;\n"
-        "double maxVal = fabs(a[col][col]);\n"
-        "for (int row = col+1; row < n; row++)\n"
-        "    if (fabs(a[row][col]) > maxVal) {\n"
-        "        maxVal = fabs(a[row][col]);\n"
-        "        pivotRow = row;\n"
-        "    }"
-    )
+        "A \u00b7 x = b",
+        S("formula", fontName="SB", fontSize=13, leading=20, alignment=TA_CENTER)
+    ))
+    story.append(sp(6))
+    story.append(body(
+        "где A \u2014 матрица коэффициентов размера n\u00d7n, "
+        "x \u2014 вектор неизвестных, "
+        "b \u2014 вектор правых частей."
+    ))
+    story.append(sp(6))
+    story.append(body(
+        "Метод состоит из двух этапов: прямого хода и обратного хода."
+    ))
+    story.append(sp(6))
+    story.append(body(
+        "Прямой ход \u2014 приведение матрицы к верхнетреугольному виду. "
+        "На каждом шаге k = 0, 1, \u2026, n\u22121 выполняются следующие действия:"
+    ))
+    story.append(sp(3))
+    story.append(bullet(
+        "В k-м столбце среди элементов строк k, k+1, \u2026, n\u22121 находится элемент "
+        "максимального модуля (ведущий элемент)."
+    ))
+    story.append(bullet(
+        "Строка, содержащая ведущий элемент, переставляется на k-е место "
+        "(счётчик перестановок увеличивается на 1)."
+    ))
+    story.append(bullet(
+        "Все элементы, расположенные ниже ведущего элемента в k-м столбце, "
+        "обнуляются путём элементарных преобразований строк."
+    ))
+    story.append(sp(6))
+    story.append(body(
+        "Для строки i > k вычисляется множитель:"
+    ))
+    story.append(sp(4))
     story.append(Paragraph(
-        code_pivot.replace(" ", "&nbsp;").replace("\n", "<br/>"),
-        S["code"]))
-    story += [sp(8), p("<b>Перестановка строк и обнуление:</b>"), sp(4)]
-    code_swap = (
-        "if (pivotRow != col) {\n"
-        "    swap(a[col], a[pivotRow]);\n"
-        "    swap(b[col], b[pivotRow]);\n"
-        "    swapCount++;\n"
-        "}\n"
-        "double factor = a[row][col] / a[col][col];\n"
-        "for (int j = col; j < n; j++)\n"
-        "    a[row][j] -= factor * a[col][j];"
-    )
+        "factor = a[i][k] / a[k][k]",
+        S("f2", fontName="M", fontSize=10, leading=14,
+          leftIndent=30, alignment=TA_LEFT)
+    ))
+    story.append(sp(4))
+    story.append(body(
+        "После чего для каждого элемента строки i применяется преобразование:"
+    ))
+    story.append(sp(4))
     story.append(Paragraph(
-        code_swap.replace(" ", "&nbsp;").replace("\n", "<br/>"),
-        S["code"]))
-    story += [sp()]
-
-    # ── 6. Сценарий работы функции main ───────────────────────────────────────
-    story += [
-        h("6. Сценарий работы функции main"),
-        p("Функция <b>main</b> демонстрирует работу алгоритма последовательно для "
-          "систем нескольких размерностей. Для каждого значения n программа:"),
-        b("Формирует матрицу <b>A</b> и вектор <b>b</b> случайными значениями."),
-        b("Создаёт резервные копии данных для вычисления невязки."),
-        b("Решает систему методом Гаусса и выводит определитель."),
-        b("Выводит вектор решения <b>x</b> (для малых n — расширенную матрицу)."),
-        b("Вычисляет и печатает норму невязки ‖Ax − b‖."),
-        b("Освобождает всю выделенную память."),
-        sp(),
-    ]
-
-    # ── 7. Результаты тестирования ────────────────────────────────────────────
-    story += [
-        h("7. Результаты тестирования"),
-        p("Программа протестирована для систем различной размерности. "
-          "Для каждого теста фиксировалась норма невязки ‖Ax − b‖, "
-          "характеризующая точность решения."),
-        sp(6),
-    ]
-
-    results_data = [
-        [Paragraph("Размерность n", S["table_header"]),
-         Paragraph("Норма невязки ‖Ax−b‖", S["table_header"]),
-         Paragraph("Оценка точности", S["table_header"])],
-        [Paragraph("2",   S["table_cell"]), Paragraph("~10⁻¹⁵", S["table_cell"]), Paragraph("Машинная точность", S["table_cell"])],
-        [Paragraph("3",   S["table_cell"]), Paragraph("~10⁻¹⁵", S["table_cell"]), Paragraph("Машинная точность", S["table_cell"])],
-        [Paragraph("4",   S["table_cell"]), Paragraph("~10⁻¹⁴", S["table_cell"]), Paragraph("Машинная точность", S["table_cell"])],
-        [Paragraph("5",   S["table_cell"]), Paragraph("~10⁻¹⁴", S["table_cell"]), Paragraph("Машинная точность", S["table_cell"])],
-        [Paragraph("10",  S["table_cell"]), Paragraph("~10⁻¹³", S["table_cell"]), Paragraph("Отличная точность", S["table_cell"])],
-        [Paragraph("50",  S["table_cell"]), Paragraph("~10⁻¹¹", S["table_cell"]), Paragraph("Высокая точность",  S["table_cell"])],
-        [Paragraph("100", S["table_cell"]), Paragraph("~10⁻¹⁰", S["table_cell"]), Paragraph("Высокая точность",  S["table_cell"])],
-        [Paragraph("500", S["table_cell"]), Paragraph("~10⁻⁸",  S["table_cell"]), Paragraph("Хорошая точность",  S["table_cell"])],
-    ]
-    col_w_r = [TW * 0.22, TW * 0.38, TW * 0.40]
-    res_tbl = Table(results_data, colWidths=col_w_r, repeatRows=1)
-    res_tbl.setStyle(tbl_style())
-    story += [res_tbl, sp(8)]
-
-    story += [
-        p("Полученные результаты демонстрируют следующие закономерности:"),
-        b("Для систем малой размерности (n ≤ 5) норма невязки достигает уровня машинной "
-          "точности (ε ≈ 10⁻¹⁵…10⁻¹⁴), что соответствует теоретическим ожиданиям."),
-        b("С ростом размерности n наблюдается постепенное увеличение нормы невязки "
-          "из-за накопления ошибок округления при арифметических операциях с числами "
-          "типа double."),
-        b("Даже для n = 500 норма невязки остаётся приемлемой (~10⁻⁸), что подтверждает "
-          "эффективность стратегии частичного выбора ведущего элемента."),
-        b("Метод корректно обнаруживает вырожденные матрицы: при максимальном значении "
-          "в столбце ниже порога 10⁻¹² выдаётся предупреждение."),
-        sp(),
-    ]
-
-    # ── 8. Пример результата работы программы ─────────────────────────────────
-    story += [
-        h("8. Пример результата работы программы"),
-        p("Ниже приведён сокращённый фрагмент консольного вывода с ключевыми моментами "
-          "работы программы для системы размерности n = 3:"),
-        sp(4),
-    ]
-    output_example = (
-        "=== Test n = 3 ===\n"
-        "Матрица системы [A|b]:\n"
-        "  8.31  -2.14   5.67 |  12.50\n"
-        " -1.08   7.92   0.33 |   4.76\n"
-        "  3.55   1.22  -6.44 |  -8.19\n"
-        "\n"
-        "Определитель: -312.854\n"
-        "Решение x: (1.234, 0.567, 0.891)\n"
-        "Норма невязки ||Ax - b|| = 2.44e-15\n"
-    )
+        "a[i][j] -= factor * a[k][j];\u2003\u2003b[i] -= factor * b[k]",
+        S("f3", fontName="M", fontSize=10, leading=14,
+          leftIndent=30, alignment=TA_LEFT)
+    ))
+    story.append(sp(8))
+    story.append(body(
+        "Обратный ход \u2014 нахождение неизвестных. "
+        "Из нижней строки вычисляется x[n\u22121] = b[n\u22121] / a[n\u22121][n\u22121]. "
+        "Далее для i = n\u22122, \u2026, 0:"
+    ))
+    story.append(sp(4))
     story.append(Paragraph(
-        output_example.replace(" ", "&nbsp;").replace("\n", "<br/>"),
-        S["code"]))
-    story += [sp()]
+        "x[i] = (b[i] \u2212 \u03a3 a[i][j]\u00b7x[j]) / a[i][i],\u2003j = i+1, \u2026, n\u22121",
+        S("f4", fontName="M", fontSize=10, leading=14,
+          leftIndent=30, alignment=TA_LEFT)
+    ))
+    story.append(sp(8))
+    story.append(body(
+        "После приведения матрицы к треугольному виду определитель равен "
+        "произведению диагональных элементов с учётом знака, определяемого "
+        "числом перестановок строк:"
+    ))
+    story.append(sp(4))
+    story.append(Paragraph(
+        "det(A) = (\u22121)\u1d56 \u00b7 a[0][0] \u00b7 a[1][1] \u00b7 \u2026 \u00b7 a[n\u22121][n\u22121]",
+        S("f5", fontName="M", fontSize=10, leading=14,
+          leftIndent=30, alignment=TA_LEFT)
+    ))
+    story.append(sp(4))
+    story.append(body("где p \u2014 количество выполненных перестановок строк."))
+    story.append(sp(8))
 
-    # ── 9. Вывод ───────────────────────────────────────────────────────────────
-    story += [
-        h("9. Вывод"),
-        p("В ходе выполнения лабораторной работы был реализован метод Гаусса с частичным "
-          "выбором ведущего элемента для решения систем линейных уравнений произвольной "
-          "размерности."),
-        sp(4),
-        p("Разработанная программа:"),
-        b("Корректно создаёт двумерный массив (матрицу) и одномерный массив (вектор) "
-          "в динамической памяти с помощью функции <b>create</b>."),
-        b("Решает систему и вычисляет определитель матрицы с помощью функции <b>gauss</b>, "
-          "реализующей численно устойчивый алгоритм с выбором ведущего элемента."),
-        b("Обеспечивает высокую точность решения для систем размерности до n = 500 "
-          "при норме невязки ~10⁻⁸."),
-        b("Предотвращает утечки памяти за счёт явного освобождения всех динамически "
-          "выделенных массивов."),
-        sp(6),
-        p("Стратегия частичного выбора ведущего элемента подтвердила свою эффективность: "
-          "точность решения остаётся высокой даже для систем большой размерности, а "
-          "накопление ошибок округления остаётся в допустимых пределах для задач "
-          "инженерных и научных вычислений."),
+    # ════════════════════════════════════════════════════════════
+    # 3. ОПИСАНИЕ ФУНКЦИЙ ПРОГРАММЫ
+    # ════════════════════════════════════════════════════════════
+    story.append(heading("3. Описание функций программы"))
+    story.append(sp(4))
+    story.append(body(
+        "Выбор ведущего элемента по столбцу (частичный выбор) необходим для:"
+    ))
+    story.append(sp(3))
+    story.append(bullet("Предотвращения деления на ноль при нулевом диагональном элементе."))
+    story.append(bullet(
+        "Уменьшения накопления ошибок округления при вычислениях "
+        "в арифметике с плавающей запятой."
+    ))
+    story.append(bullet("Повышения численной устойчивости алгоритма."))
+    story.append(sp(8))
+
+    func_header = ["Функция", "Прототип", "Назначение"]
+    func_rows = [
+        ("create",      "int create(int n,\ndouble**& a, double*& b)",
+         "Динамическое выделение памяти и инициализация матрицы A "
+         "и вектора b случайными значениями"),
+        ("gauss",       "double gauss(int n,\ndouble** a, double* b, double* x)",
+         "Решение СЛУ методом Гаусса с частичным выбором; возвращает определитель"),
+        ("freeMemory",  "void freeMemory(int n,\ndouble**& a, double*& b)",
+         "Освобождение динамически выделенной памяти"),
+        ("printSystem", "void printSystem(int n,\ndouble** a, double* b)",
+         "Вывод расширенной матрицы системы (только для малых n)"),
+        ("residual",    "double residual(...)",
+         "Вычисление нормы невязки ||Ax \u2212 b|| для контроля точности"),
+        ("runTest",     "void runTest(int n)",
+         "Запуск полного теста для заданной размерности n"),
     ]
+    story.append(data_table(
+        func_header,
+        [(r[0], r[1], r[2]) for r in func_rows],
+        [TW * 0.17, TW * 0.38, TW * 0.45],
+    ))
+    story.append(sp(8))
+
+    # ════════════════════════════════════════════════════════════
+    # 4. СОСТАВ ПРОГРАММЫ
+    # ════════════════════════════════════════════════════════════
+    story.append(heading("4. Состав программы"))
+    story.append(sp(4))
+    story.append(body(
+        "Программа состоит из нескольких функций и одной демонстрационной функции main. "
+        "Функция main последовательно вызывает runTest для каждого значения n. "
+        "Функция runTest выполняет следующие шаги:"
+    ))
+    story.append(sp(3))
+    story.append(bullet("Вызывает create \u2014 выделение памяти и заполнение данными."))
+    story.append(bullet("Создаёт копию исходных данных для последующего вычисления невязки."))
+    story.append(bullet("Вызывает gauss \u2014 решение системы и получение определителя."))
+    story.append(bullet("Вызывает residual \u2014 проверка точности полученного решения."))
+    story.append(bullet("Вызывает freeMemory \u2014 освобождение всей динамической памяти."))
+    story.append(sp(8))
+
+    # ════════════════════════════════════════════════════════════
+    # 5. АЛГОРИТМ И КЛЮЧЕВЫЕ ФРАГМЕНТЫ КОДА
+    # ════════════════════════════════════════════════════════════
+    story.append(heading("5. Алгоритм и ключевые фрагменты кода"))
+    story.append(sp(4))
+    story.append(body("Выделение двумерного массива в динамической памяти:"))
+    story.append(sp(4))
+    story.append(code_block([
+        "a = new double*[n];",
+        "for (int i = 0; i < n; i++)",
+        "    a[i] = new double[n];",
+    ]))
+    story.append(sp(10))
+    story.append(body("Поиск ведущего элемента:"))
+    story.append(sp(4))
+    story.append(code_block([
+        "int pivotRow = col;",
+        "double maxVal = fabs(a[col][col]);",
+        "for (int row = col + 1; row < n; row++)",
+        "    if (fabs(a[row][col]) > maxVal) {",
+        "        maxVal = fabs(a[row][col]);",
+        "        pivotRow = row;",
+        "    }",
+    ]))
+    story.append(sp(10))
+    story.append(body("Перестановка строк и обнуление элементов:"))
+    story.append(sp(4))
+    story.append(code_block([
+        "if (pivotRow != col) {",
+        "    swap(a[col], a[pivotRow]);",
+        "    swap(b[col], b[pivotRow]);",
+        "    swapCount++;",
+        "}",
+        "double factor = a[row][col] / a[col][col];",
+        "for (int j = col; j < n; j++)",
+        "    a[row][j] -= factor * a[col][j];",
+    ]))
+    story.append(sp(8))
+
+    # ════════════════════════════════════════════════════════════
+    # 6. СЦЕНАРИЙ РАБОТЫ ФУНКЦИИ MAIN
+    # ════════════════════════════════════════════════════════════
+    story.append(heading("6. Сценарий работы функции main"))
+    story.append(sp(4))
+    story.append(body(
+        "Функция main демонстрирует работу алгоритма последовательно "
+        "для систем нескольких размерностей. Для каждого значения n программа:"
+    ))
+    story.append(sp(3))
+    story.append(bullet("Формирует матрицу A и вектор b случайными значениями."))
+    story.append(bullet("Создаёт резервные копии данных для вычисления невязки."))
+    story.append(bullet("Решает систему методом Гаусса и выводит определитель."))
+    story.append(bullet("Выводит вектор решения x (для малых n \u2014 расширенную матрицу)."))
+    story.append(bullet("Вычисляет и печатает норму невязки ||Ax \u2212 b||."))
+    story.append(bullet("Освобождает всю выделенную память."))
+    story.append(sp(8))
+
+    # ════════════════════════════════════════════════════════════
+    # 7. РЕЗУЛЬТАТЫ ТЕСТИРОВАНИЯ
+    # ════════════════════════════════════════════════════════════
+    story.append(heading("7. Результаты тестирования"))
+    story.append(sp(4))
+    story.append(body(
+        "Программа протестирована для систем различной размерности. "
+        "Для каждого теста фиксировалась норма невязки ||Ax \u2212 b||, "
+        "характеризующая точность решения."
+    ))
+    story.append(sp(8))
+
+    res_header = ["Размерность n", "Норма невязки ||Ax\u2212b||", "Оценка точности"]
+    res_rows = [
+        ("2",   "~10\u207b\u00b9\u2075", "Машинная точность"),
+        ("3",   "~10\u207b\u00b9\u2075", "Машинная точность"),
+        ("4",   "~10\u207b\u00b9\u2074", "Машинная точность"),
+        ("5",   "~10\u207b\u00b9\u2074", "Машинная точность"),
+        ("10",  "~10\u207b\u00b9\u00b3", "Отличная точность"),
+        ("50",  "~10\u207b\u00b9\u00b9", "Высокая точность"),
+        ("100", "~10\u207b\u00b9\u2070", "Высокая точность"),
+        ("500", "~10\u207b\u2078",       "Хорошая точность"),
+    ]
+    story.append(data_table(
+        res_header, res_rows,
+        [TW * 0.22, TW * 0.38, TW * 0.40],
+    ))
+    story.append(sp(10))
+
+    story.append(body("Полученные результаты демонстрируют следующие закономерности:"))
+    story.append(sp(3))
+    story.append(bullet(
+        "Для систем малой размерности (n \u2264 5) норма невязки достигает уровня "
+        "машинной точности (\u03b5 \u2248 10\u207b\u00b9\u2075\u2026"
+        "10\u207b\u00b9\u2074), что соответствует теоретическим ожиданиям."
+    ))
+    story.append(bullet(
+        "С ростом размерности n наблюдается постепенное увеличение нормы невязки "
+        "из-за накопления ошибок округления при арифметических операциях "
+        "с числами типа double."
+    ))
+    story.append(bullet(
+        "Даже для n = 500 норма невязки остаётся приемлемой (~10\u207b\u2078), "
+        "что подтверждает эффективность стратегии частичного выбора ведущего элемента."
+    ))
+    story.append(bullet(
+        "Метод корректно обнаруживает вырожденные матрицы: при максимальном значении "
+        "в столбце ниже порога 10\u207b\u00b9\u00b2 выдаётся предупреждение."
+    ))
+    story.append(sp(8))
+
+    # ════════════════════════════════════════════════════════════
+    # 8. ПРИМЕР РЕЗУЛЬТАТА РАБОТЫ ПРОГРАММЫ
+    # ════════════════════════════════════════════════════════════
+    story.append(heading("8. Пример результата работы программы"))
+    story.append(sp(4))
+    story.append(body(
+        "Ниже приведён сокращённый фрагмент консольного вывода "
+        "с ключевыми моментами работы программы для системы размерности n = 3."
+    ))
+    story.append(sp(4))
+    story.append(code_block([
+        "=== Test n = 3 ===",
+        "Матрица системы [A|b]:",
+        "   8.31  -2.14   5.67 |  12.50",
+        "  -1.08   7.92   0.33 |   4.76",
+        "   3.55   1.22  -6.44 |  -8.19",
+        "",
+        "Определитель: -312.854",
+        "Решение x: (1.234, 0.567, 0.891)",
+        "Норма невязки ||Ax - b|| = 2.44e-15",
+    ]))
+    story.append(sp(8))
+
+    # ════════════════════════════════════════════════════════════
+    # 9. ВЫВОД
+    # ════════════════════════════════════════════════════════════
+    story.append(heading("9. Вывод"))
+    story.append(sp(4))
+    story.append(body(
+        "В ходе выполнения лабораторной работы был реализован метод Гаусса "
+        "с частичным выбором ведущего элемента для решения систем линейных уравнений "
+        "произвольной размерности."
+    ))
+    story.append(sp(6))
+    story.append(body("Разработанная программа:"))
+    story.append(sp(3))
+    story.append(bullet(
+        "Корректно создаёт двумерный массив (матрицу) и одномерный массив (вектор) "
+        "в динамической памяти с помощью функции create."
+    ))
+    story.append(bullet(
+        "Решает систему и вычисляет определитель матрицы с помощью функции gauss, "
+        "реализующей численно устойчивый алгоритм с выбором ведущего элемента."
+    ))
+    story.append(bullet(
+        "Обеспечивает высокую точность решения для систем размерности до n = 500 "
+        "при норме невязки ~10\u207b\u2078."
+    ))
+    story.append(bullet(
+        "Предотвращает утечки памяти за счёт явного освобождения всех "
+        "динамически выделенных массивов."
+    ))
+    story.append(sp(8))
+    story.append(body(
+        "Стратегия частичного выбора ведущего элемента подтвердила свою эффективность: "
+        "точность решения остаётся высокой даже для систем большой размерности, "
+        "а накопление ошибок округления остаётся в допустимых пределах для задач "
+        "инженерных и научных вычислений."
+    ))
 
     doc.build(story)
     print(f"PDF сгенерирован: {output_path}")
